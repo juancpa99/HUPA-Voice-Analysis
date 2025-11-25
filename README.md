@@ -1,0 +1,88 @@
+# HUPA Voice Analysis Project
+
+This repository contains MATLAB scripts for feature extraction and classification of voice signals (Pathological vs. Normal) using the HUPA dataset structure. It focuses on Perturbation, Regularity, Noise (PRN), and Complexity features.
+
+## 📂 Database Download
+
+To run these scripts, you need the **HUPA Database**.
+
+> **[🔗 INSERT DATASET DOWNLOAD LINK HERE]**
+
+**Setup Instructions:**
+1. Download the dataset.
+2. Extract the files into the `data/` folder of this repository.
+3. Ensure the directory structure matches exactly:
+
+```text
+HUPA-Voice-Analysis/
+├── data/
+│   └── HUPA_db/
+│       ├── Normal/   <-- Contains normal .wav files
+│       └── Pathol/   <-- Contains pathological .wav files
+```
+
+## Workflow
+
+1.  **Feature Extraction (`HUPA_Features_Extraction.m`)**:
+    * Loads `.wav` files from `data/`.
+    * Extracts AVCA (PRN) features and CPP (Covarep).
+    * Saves the result to a CSV file.
+2.  **Analysis & Classification (`HUPA_PRN_GridSearch_ROC.m`)**:
+    * Loads the generated CSV.
+    * Performs Grid Search with Cross-Validation.
+    * Evaluates models (Logistic Regression, SVM, Random Forest, k-NN, MLP).
+    * Generates ROC curves and AUC statistics.
+
+## Requirements
+
+* MATLAB (R2020b or newer recommended).
+* Statistics and Machine Learning Toolbox.
+* Deep Learning Toolbox (optional, for `fitcnet` / MLP).
+
+### External Toolboxes
+
+To run the feature extraction, you must download the following third-party toolboxes and place them inside the `toolboxes/` folder.
+
+**Required Libraries:**
+
+* **[AVCA-ByO](https://github.com/BYO-UPM/AVCA-ByO)**: Essential for P, R, N features.
+* **[Covarep](https://github.com/covarep/covarep)**: Used for CPP feature extraction.
+* **[Hurst Estimators](https://www.mathworks.com/matlabcentral/fileexchange/19148-hurst-parameter-estimate)**: Implementation to compute the Hurst exponent.
+* **[RPDE](http://www.maxlittle.net/software/rpde.zip)**: Code to compute Recurrence Period Density Entropy (Little et al., 2007).
+* **[FastDFA](http://www.maxlittle.net/software/fastdfa.zip)**: Implementation to compute Detrended Fluctuation Analysis (Little et al., 2006).
+* **[HCTSA](https://github.com/benfulcher/hctsa)**: Highly Comparative Time-Series Analysis (used for D2 and LLE).
+* **[ME (Markovian Entropies)](https://github.com/jdariasl/ME)**: Functions for the computation of entropies from Markov Models.
+
+> **⚠️ Compatibility Note for Newer MATLAB Versions**
+>
+> Many of these toolboxes were developed years ago. If you are using a recent version of MATLAB (e.g., R2020b+), please be aware of the following:
+> * **Legacy Code:** You may need to manually update small parts of the external toolboxes to fix deprecated functions.
+> * **Path Conflicts:** The script `HUPA_Features_Extraction.m` already handles a known conflict with Covarep (it removes `backcompatibility_2015` to avoid breaking the built-in `audioread`).
+> * **Debugging:** If you encounter "function not found" or "input argument" errors inside these toolboxes, check that their internal paths are correctly added and that they support your MATLAB version.
+
+## Setup & Usage
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/juancpa99/HUPA-Voice-Analysis.git](https://github.com/juancpa99/HUPA-Voice-Analysis.git)
+    cd HUPA-Voice-Analysis
+    ```
+
+2.  **Prepare Directory Structure:**
+    Create a `toolboxes` folder and place the external libraries inside.
+    Create a `data` folder structured as follows:
+    ```
+    data/
+    ├── HUPA_db/
+    │   ├── Normal/   (place .wav files here)
+    │   └── Pathol/   (place .wav files here)
+    ```
+
+3.  **Run Extraction:**
+    Open `HUPA_Features_Extraction.m` in MATLAB and run it. This generates `data/HUPA_voice_features_PRN_CPP.csv`.
+
+4.  **Run Analysis:**
+    Open `HUPA_PRN_GridSearch_ROC.m` and run it to see the classification results.
+
+## Citation
+(This is for the paper).

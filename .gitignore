@@ -1,0 +1,16 @@
+# MATLAB files
+*.asv
+*.autosave
+
+# Data files (Don't upload heavy audio or sensitive data)
+*.wav
+*.mp3
+data/HUPA_db/
+data/*.csv
+
+# Toolboxes (Users should download these themselves usually)
+toolboxes/
+
+# OS generated files
+.DS_Store
+Thumbs.db
