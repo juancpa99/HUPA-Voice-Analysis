@@ -1,16 +1,31 @@
-# MATLAB files
+# ======================
+# MATLAB temporary files
+# ======================
 *.asv
 *.autosave
 
-# Data files (Don't upload heavy audio or sensitive data)
+# ======================
+# Audio files
+# (do not commit raw recordings)
+# ======================
 *.wav
-*.mp3
-data/HUPA_db/
-data/*.csv
 
-# Toolboxes (Users should download these themselves usually)
+# ======================
+# Data and figures generated under data/
+# (features, results, plots, etc.)
+# ======================
+data/**/*.csv
+data/**/*.png
+data/**/*.pdf
+
+# ======================
+# Toolboxes
+# (users are expected to download these themselves)
+# ======================
 toolboxes/
 
-# OS generated files
+# ======================
+# OS-generated files
+# ======================
 .DS_Store
 Thumbs.db

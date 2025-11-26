@@ -4,7 +4,11 @@
 %   followed by a final evaluation on a hold-out Test set for various models.
 %   The analysis is performed on specific AVCA + Complexity feature groups.
 %
-% Workflow:
+%   This version runs the full pipeline on TWO datasets:
+%     - HUPA_voice_features_PRN_CPP_50kHz.csv
+%     - HUPA_voice_features_PRN_CPP_44_1kHz.csv
+%
+% Workflow (per dataset):
 %   1. Load data.
 %   2. Group features (Noise, Perturbation, Tremor, Complexity).
 %   3. For each group:
@@ -20,301 +24,366 @@
 
 clear; clc; close all;
 
-%% ======================== 1) PATHS AND LOADING ==========================
+%% ======================== 1) PATHS AND DATASETS =========================
 % Detect current path
 currentPath = fileparts(mfilename('fullpath'));
 
-% Look for the CSV in the 'data' folder
-csvPath = fullfile(currentPath, 'data', 'HUPA_voice_features_PRN_CPP.csv');
+% Base data folder
+dataDir = fullfile(currentPath, 'data');
 
-if ~exist(csvPath, 'file')
-    error('File not found: %s. \nPlease run feature extraction first or check path.', csvPath);
-end
+% List of CSV files and labels (per sampling rate)
+csvFiles = { ...
+    'HUPA_voice_features_PRN_CPP_50kHz.csv', ...
+    'HUPA_voice_features_PRN_CPP_44_1kHz.csv' ...
+};
+
+fsLabels = { ...
+    '50 kHz', ...
+    '44.1 kHz' ...
+};
 
 % Check if fitcnet (Neural Network) is available in this version
 hasFitcnet = ~isempty(which('fitcnet'));
 
-T = readtable(csvPath);
+%% ======================== 2) LOOP OVER DATASETS =========================
+for ds = 1:numel(csvFiles)
 
-% Ensure the target variable exists
-if ~ismember('Label', T.Properties.VariableNames)
-    error('Column "Label" not found in the CSV.');
-end
+    csvPath = fullfile(dataDir, csvFiles{ds});
+    fsLabel = fsLabels{ds};
 
-y = T.Label;
-if ~isnumeric(y)
-    y = double(y);
-end
+    fprintf('\n=========================================================\n');
+    fprintf('   Running Grid Search + ROC for dataset: %s (%s)\n', ...
+        csvFiles{ds}, fsLabel);
+    fprintf('=========================================================\n');
 
-%% ================= 2) DEFINITION OF FEATURE GROUPS ======================
-% --- Noise Features ---
-noiseCols = {'HNR_mean','HNR_std', ...
-             'CHNR_mean','CHNR_std', ...
-             'GNE_mean','GNE_std', ...
-             'NNE_mean','NNE_std'};
-
-% --- Perturbation Features (CPP + jitter/shimmer) ---
-perturbCols = { ...
-    'CPP', ...        % Cepstral Peak Prominence
-    'rShimmer', ...   % Relative Shimmer
-    'rJitta','rJitt','rRrRAP','rPPQ','rSPPQ', ...
-    'rShdB','rAPQ','rSAPQ'};
-
-% --- Tremor Features ---
-tremorCols = {'rFTRI','rATRI','rFftr','rFatr'};
-
-% --- Complexity Features ---
-complexCols = { ...
-    'rApEn_mean','rApEn_std', ...
-    'rSampEn_mean','rSampEn_std', ...
-    'rFuzzyEn_mean','rFuzzyEn_std', ...
-    'rGSampEn_mean','rGSampEn_std', ...
-    'rmSampEn_mean','rmSampEn_std', ...
-    'CorrDim_mean','CorrDim_std', ...
-    'LLE_mean','LLE_std', ...
-    'Hurst_mean','Hurst_std', ...
-    'mDFA_mean','mDFA_std', ...
-    'RPDE_mean','RPDE_std', ...
-    'PE_mean','PE_std', ...
-    'MarkEnt_mean','MarkEnt_std'};
-
-% Ensure we only use columns that actually exist in the loaded table
-noiseCols      = intersect(noiseCols,      T.Properties.VariableNames, 'stable');
-perturbCols    = intersect(perturbCols,    T.Properties.VariableNames, 'stable');
-tremorCols     = intersect(tremorCols,     T.Properties.VariableNames, 'stable');
-complexCols    = intersect(complexCols,    T.Properties.VariableNames, 'stable');
-
-% Create a structure to iterate over groups later
-groups = struct();
-groups.noise        = noiseCols;
-groups.perturbation = perturbCols;
-groups.tremor       = tremorCols;
-groups.complexity   = complexCols;
-% Optional: A group containing 'all' features combined
-groups.all          = unique([noiseCols, perturbCols, tremorCols, complexCols]);
-
-groupNames = fieldnames(groups);
-groupOrderForPlots = {'noise','perturbation','tremor','complexity'};
-
-fprintf('Feature groups defined:\n');
-for gi = 1:numel(groupNames)
-    g = groupNames{gi};
-    fprintf('  %-12s : %2d features\n', g, numel(groups.(g)));
-end
-
-%% ================= 3) MAIN LOOP: GRID SEARCH + CV + TEST ================
-rng(42); % Set seed for reproducibility
-
-summaryRows = {};  % To store: {Group, Model, CvAUC, TestAUC}
-rocStruct   = struct();
-
-for gi = 1:numel(groupNames)
-    groupName = groupNames{gi};
-    featCols  = groups.(groupName);
-
-    if isempty(featCols)
-        warning('Group "%s" has no available features. Skipping.', groupName);
+    if ~exist(csvPath, 'file')
+        warning('File not found: %s. Skipping this dataset.\n', csvPath);
         continue;
     end
 
-    % ================= PREPARE X AND Y ===================================
-    X = table2array(T(:, featCols));
-    yVec = y;
+    %% ======================== 3) LOADING DATA ===========================
+    T = readtable(csvPath);
 
-    % 0) Treat Infinite values as NaN (to be imputed later)
-    X(~isfinite(X)) = NaN;
+    % Ensure the target variable exists
+    if ~ismember('Label', T.Properties.VariableNames)
+        error('Column "Label" not found in the CSV: %s', csvPath);
+    end
 
-    % 1) Detect "broken" columns:
-    %    - All NaN
-    %    - Constant values (variance = 0, ignoring NaNs)
-    allNaN   = all(isnan(X), 1);
-    allConst = false(1, size(X,2));
+    y = T.Label;
+    if ~isnumeric(y)
+        y = double(y);
+    end
 
-    for j = 1:size(X,2)
-        col     = X(:, j);
-        colNN   = col(~isnan(col));   % Remove NaNs for check
-        if numel(colNN) <= 1
-            allConst(j) = true;
-        else
-            if std(colNN) == 0
+    %% ================= 4) DEFINITION OF FEATURE GROUPS ==================
+    % --- Noise Features ---
+    noiseCols = {'HNR_mean','HNR_std', ...
+                 'CHNR_mean','CHNR_std', ...
+                 'GNE_mean','GNE_std', ...
+                 'NNE_mean','NNE_std'};
+
+    % --- Perturbation Features (CPP + jitter/shimmer) ---
+    perturbCols = { ...
+        'CPP', ...        % Cepstral Peak Prominence
+        'rShimmer', ...   % Relative Shimmer
+        'rJitta','rJitt','rRrRAP','rPPQ','rSPPQ', ...
+        'rShdB','rAPQ','rSAPQ'};
+
+    % --- Tremor Features ---
+    tremorCols = {'rFTRI','rATRI','rFftr','rFatr'};
+
+    % --- Complexity Features ---
+    complexCols = { ...
+        'rApEn_mean','rApEn_std', ...
+        'rSampEn_mean','rSampEn_std', ...
+        'rFuzzyEn_mean','rFuzzyEn_std', ...
+        'rGSampEn_mean','rGSampEn_std', ...
+        'rmSampEn_mean','rmSampEn_std', ...
+        'CorrDim_mean','CorrDim_std', ...
+        'LLE_mean','LLE_std', ...
+        'Hurst_mean','Hurst_std', ...
+        'mDFA_mean','mDFA_std', ...
+        'RPDE_mean','RPDE_std', ...
+        'PE_mean','PE_std', ...
+        'MarkEnt_mean','MarkEnt_std'};
+
+    % Ensure we only use columns that actually exist in the loaded table
+    noiseCols      = intersect(noiseCols,      T.Properties.VariableNames, 'stable');
+    perturbCols    = intersect(perturbCols,    T.Properties.VariableNames, 'stable');
+    tremorCols     = intersect(tremorCols,     T.Properties.VariableNames, 'stable');
+    complexCols    = intersect(complexCols,    T.Properties.VariableNames, 'stable');
+
+    % Create a structure to iterate over groups later
+    groups = struct();
+    groups.noise        = noiseCols;
+    groups.perturbation = perturbCols;
+    groups.tremor       = tremorCols;
+    groups.complexity   = complexCols;
+    % Optional: A group containing 'all' features combined
+    groups.all          = unique([noiseCols, perturbCols, tremorCols, complexCols]);
+
+    groupNames = fieldnames(groups);
+    groupOrderForPlots = {'noise','perturbation','tremor','complexity'};
+
+    fprintf('Feature groups defined for %s:\n', fsLabel);
+    for gi = 1:numel(groupNames)
+        g = groupNames{gi};
+        fprintf('  %-12s : %2d features\n', g, numel(groups.(g)));
+    end
+
+    %% ================= 5) MAIN LOOP: GRID SEARCH + CV + TEST ============
+    rng(42); % Set seed for reproducibility (per dataset)
+
+    summaryRows = {};  % To store: {Group, Model, CvAUC, TestAUC}
+    rocStruct   = struct();
+
+    for gi = 1:numel(groupNames)
+        groupName = groupNames{gi};
+        featCols  = groups.(groupName);
+
+        if isempty(featCols)
+            warning('Group "%s" has no available features in %s. Skipping.', ...
+                groupName, fsLabel);
+            continue;
+        end
+
+        % ================= PREPARE X AND Y ===================================
+        X    = table2array(T(:, featCols));
+        yVec = y;
+
+        % 0) Treat Infinite values as NaN (to be imputed later)
+        X(~isfinite(X)) = NaN;
+
+        % 1) Detect "broken" columns:
+        %    - All NaN
+        %    - Constant values (variance = 0, ignoring NaNs)
+        allNaN   = all(isnan(X), 1);
+        allConst = false(1, size(X,2));
+
+        for j = 1:size(X,2)
+            col   = X(:, j);
+            colNN = col(~isnan(col));   % Remove NaNs for check
+            if numel(colNN) <= 1
                 allConst(j) = true;
+            else
+                if std(colNN) == 0
+                    allConst(j) = true;
+                end
             end
         end
-    end
 
-    badCols = allNaN | allConst;
+        badCols = allNaN | allConst;
 
-    if any(badCols)
-        fprintf('  [%s] Removed columns (NaN or Constant):\n', groupName);
-        disp(featCols(badCols));
-    end
-
-    X       = X(:, ~badCols);
-    featUse = featCols(~badCols);
-
-    % If no valid columns remain, skip group
-    if isempty(X)
-        warning('Group "%s": no valid features after NaN/constant removal. Skipping.', groupName);
-        continue;
-    end
-
-    % 2) Impute remaining NaNs using the Median of each column
-    for j = 1:size(X,2)
-        col   = X(:, j);
-        maskN = isnan(col);
-        if any(maskN)
-            med = median(col(~maskN));
-            if isempty(med) || isnan(med)
-                med = 0;  % Pathological case fallback
-            end
-            col(maskN) = med;
-            X(:, j)    = col;
+        if any(badCols)
+            fprintf('  [%s - %s] Removed columns (NaN or Constant):\n', ...
+                fsLabel, groupName);
+            disp(featCols(badCols));
         end
-    end
 
-    % 3) Check Class Balance
-    if any(~isfinite(yVec))
-        error('y (Label) contains non-finite values. Please check CSV.');
-    end
+        X       = X(:, ~badCols);
+        featUse = featCols(~badCols); %#ok<NASGU>
 
-    if numel(unique(yVec)) < 2
-        warning('Group "%s": only one class found in labels. Skipping.', groupName);
-        continue;
-    end
+        % If no valid columns remain, skip group
+        if isempty(X)
+            warning('Group "%s" (%s): no valid features after NaN/constant removal. Skipping.', ...
+                groupName, fsLabel);
+            continue;
+        end
 
-    % ================= SPLIT TRAIN / TEST ================================
-    % Outer split: 80% Train (for Grid Search CV), 20% Test (for final Eval)
-    cvOuter = cvpartition(yVec, 'HoldOut', 0.20);
-    X_train = X(training(cvOuter), :);
-    y_train = yVec(training(cvOuter));
-    X_test  = X(test(cvOuter), :);
-    y_test  = yVec(test(cvOuter));
+        % 2) Impute remaining NaNs using the Median of each column
+        for j = 1:size(X,2)
+            col   = X(:, j);
+            maskN = isnan(col);
+            if any(maskN)
+                med = median(col(~maskN));
+                if isempty(med) || isnan(med)
+                    med = 0;  % Pathological case fallback
+                end
+                col(maskN) = med;
+                X(:, j)    = col;
+            end
+        end
 
-    fprintf('\n=== Group: %s (%d features, %d train / %d test) ===\n', ...
-        groupName, size(X_train,2), numel(y_train), numel(y_test));
+        % 3) Check Class Balance
+        if any(~isfinite(yVec))
+            error('y (Label) contains non-finite values. Please check CSV: %s', csvPath);
+        end
 
-    % ---------- Model 1: Logistic Regression ----------
-    try
-        [cvAUC, testAUC, fpr, tpr] = model_logreg(X_train, y_train, X_test, y_test);
-        fprintf('  Logistic Regression: CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
-        summaryRows(end+1,:) = {groupName, 'logreg', cvAUC, testAUC}; %#ok<AGROW>
-        rocStruct.(groupName).logreg.fpr      = fpr;
-        rocStruct.(groupName).logreg.tpr      = tpr;
-        rocStruct.(groupName).logreg.testAUC  = testAUC;
-    catch ME
-        warning('  Logistic Regression failed for group "%s": %s', groupName, ME.message);
-    end
+        if numel(unique(yVec)) < 2
+            warning('Group "%s" (%s): only one class found in labels. Skipping.', ...
+                groupName, fsLabel);
+            continue;
+        end
 
-    % ---------- Model 2: SVM RBF ----------
-    try
-        [cvAUC, testAUC, fpr, tpr] = model_svm_rbf(X_train, y_train, X_test, y_test);
-        fprintf('  SVM RBF:            CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
-        summaryRows(end+1,:) = {groupName, 'svm_rbf', cvAUC, testAUC};
-        rocStruct.(groupName).svm_rbf.fpr     = fpr;
-        rocStruct.(groupName).svm_rbf.tpr     = tpr;
-        rocStruct.(groupName).svm_rbf.testAUC = testAUC;
-    catch ME
-        warning('  SVM RBF failed for group "%s": %s', groupName, ME.message);
-    end
+        % ================= SPLIT TRAIN / TEST ================================
+        % Outer split: 80% Train (for Grid Search CV), 20% Test (for final Eval)
+        cvOuter = cvpartition(yVec, 'HoldOut', 0.20);
+        X_train = X(training(cvOuter), :);
+        y_train = yVec(training(cvOuter));
+        X_test  = X(test(cvOuter), :);
+        y_test  = yVec(test(cvOuter));
 
-    % ---------- Model 3: Random Forest (TreeBagger) ----------
-    try
-        [cvAUC, testAUC, fpr, tpr] = model_random_forest(X_train, y_train, X_test, y_test);
-        fprintf('  Random Forest:      CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
-        summaryRows(end+1,:) = {groupName, 'rf', cvAUC, testAUC};
-        rocStruct.(groupName).rf.fpr          = fpr;
-        rocStruct.(groupName).rf.tpr          = tpr;
-        rocStruct.(groupName).rf.testAUC      = testAUC;
-    catch ME
-        warning('  Random Forest failed for group "%s": %s', groupName, ME.message);
-    end
+        fprintf('\n=== [%s] Group: %s (%d features, %d train / %d test) ===\n', ...
+            fsLabel, groupName, size(X_train,2), numel(y_train), numel(y_test));
 
-    % ---------- Model 4: k-NN ----------
-    try
-        [cvAUC, testAUC, fpr, tpr] = model_knn(X_train, y_train, X_test, y_test);
-        fprintf('  k-NN:               CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
-        summaryRows(end+1,:) = {groupName, 'knn', cvAUC, testAUC};
-        rocStruct.(groupName).knn.fpr         = fpr;
-        rocStruct.(groupName).knn.tpr         = tpr;
-        rocStruct.(groupName).knn.testAUC     = testAUC;
-    catch ME
-        warning('  k-NN failed for group "%s": %s', groupName, ME.message);
-    end
-
-    % ---------- Model 5: Neural Network (fitcnet) ----------
-    if hasFitcnet
+        % ---------- Model 1: Logistic Regression ----------
         try
-            [cvAUC, testAUC, fpr, tpr] = model_mlp(X_train, y_train, X_test, y_test);
-            fprintf('  Neural Network:     CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
-            summaryRows(end+1,:) = {groupName, 'mlp', cvAUC, testAUC};
-            rocStruct.(groupName).mlp.fpr      = fpr;
-            rocStruct.(groupName).mlp.tpr      = tpr;
-            rocStruct.(groupName).mlp.testAUC  = testAUC;
+            [cvAUC, testAUC, fpr, tpr] = model_logreg(X_train, y_train, X_test, y_test);
+            fprintf('  Logistic Regression: CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
+            summaryRows(end+1,:) = {groupName, 'logreg', cvAUC, testAUC}; %#ok<AGROW>
+            rocStruct.(groupName).logreg.fpr      = fpr;
+            rocStruct.(groupName).logreg.tpr      = tpr;
+            rocStruct.(groupName).logreg.testAUC  = testAUC;
         catch ME
-            warning('  Neural Network (fitcnet) failed for group "%s": %s', groupName, ME.message);
+            warning('  Logistic Regression failed for group "%s" (%s): %s', ...
+                groupName, fsLabel, ME.message);
         end
+
+        % ---------- Model 2: SVM RBF ----------
+        try
+            [cvAUC, testAUC, fpr, tpr] = model_svm_rbf(X_train, y_train, X_test, y_test);
+            fprintf('  SVM RBF:            CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
+            summaryRows(end+1,:) = {groupName, 'svm_rbf', cvAUC, testAUC};
+            rocStruct.(groupName).svm_rbf.fpr     = fpr;
+            rocStruct.(groupName).svm_rbf.tpr     = tpr;
+            rocStruct.(groupName).svm_rbf.testAUC = testAUC;
+        catch ME
+            warning('  SVM RBF failed for group "%s" (%s): %s', ...
+                groupName, fsLabel, ME.message);
+        end
+
+        % ---------- Model 3: Random Forest (TreeBagger) ----------
+        try
+            [cvAUC, testAUC, fpr, tpr] = model_random_forest(X_train, y_train, X_test, y_test);
+            fprintf('  Random Forest:      CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
+            summaryRows(end+1,:) = {groupName, 'rf', cvAUC, testAUC};
+            rocStruct.(groupName).rf.fpr          = fpr;
+            rocStruct.(groupName).rf.tpr          = tpr;
+            rocStruct.(groupName).rf.testAUC      = testAUC;
+        catch ME
+            warning('  Random Forest failed for group "%s" (%s): %s', ...
+                groupName, fsLabel, ME.message);
+        end
+
+        % ---------- Model 4: k-NN ----------
+        try
+            [cvAUC, testAUC, fpr, tpr] = model_knn(X_train, y_train, X_test, y_test);
+            fprintf('  k-NN:               CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
+            summaryRows(end+1,:) = {groupName, 'knn', cvAUC, testAUC};
+            rocStruct.(groupName).knn.fpr         = fpr;
+            rocStruct.(groupName).knn.tpr         = tpr;
+            rocStruct.(groupName).knn.testAUC     = testAUC;
+        catch ME
+            warning('  k-NN failed for group "%s" (%s): %s', ...
+                groupName, fsLabel, ME.message);
+        end
+
+        % ---------- Model 5: Neural Network (fitcnet) ----------
+        if hasFitcnet
+            try
+                [cvAUC, testAUC, fpr, tpr] = model_mlp(X_train, y_train, X_test, y_test);
+                fprintf('  Neural Network:     CV AUC = %.3f | Test AUC = %.3f\n', cvAUC, testAUC);
+                summaryRows(end+1,:) = {groupName, 'mlp', cvAUC, testAUC};
+                rocStruct.(groupName).mlp.fpr      = fpr;
+                rocStruct.(groupName).mlp.tpr      = tpr;
+                rocStruct.(groupName).mlp.testAUC  = testAUC;
+            catch ME
+                warning('  Neural Network (fitcnet) failed for group "%s" (%s): %s', ...
+                    groupName, fsLabel, ME.message);
+            end
+        else
+            fprintf('  Neural Network:     skipped (fitcnet not available).\n');
+        end
+    end
+
+    %% ===================== 6) RESULTS SUMMARY TABLE =====================
+    if ~isempty(summaryRows)
+        summaryTable = cell2table(summaryRows, ...
+            'VariableNames', {'Group','Model','CvAUC','TestAUC'});
+        fprintf('\n=========== Overall summary for %s (sorted by Group, Test AUC) ===========\n', ...
+            fsLabel);
+        % Sort by Group Name (ascending) then Test AUC (descending)
+        summaryTable = sortrows(summaryTable, {'Group','TestAUC'}, {'ascend','descend'});
+        disp(summaryTable);
     else
-        fprintf('  Neural Network:     skipped (fitcnet not available).\n');
+        warning('No successful model runs to summarize for dataset %s.', fsLabel);
     end
-end
 
-%% ===================== 4) RESULTS SUMMARY TABLE =========================
-if ~isempty(summaryRows)
-    summaryTable = cell2table(summaryRows, ...
-        'VariableNames', {'Group','Model','CvAUC','TestAUC'});
-    fprintf('\n================ Overall summary (sorted by Group, Test AUC) ================\n');
-    % Sort by Group Name (ascending) then Test AUC (descending)
-    summaryTable = sortrows(summaryTable, {'Group','TestAUC'}, {'ascend','descend'});
-    disp(summaryTable);
-else
-    warning('No successful model runs to summarize.');
-end
-
-%% ====================== 5) ROC PLOTS (4 SUBPLOTS) =======================
-modelOrder = {'logreg','svm_rbf','rf','knn','mlp'};
-prettyName.logreg  = 'Logistic';
-prettyName.svm_rbf = 'SVM RBF';
-prettyName.rf      = 'Random Forest';
-prettyName.knn     = 'k-NN';
-prettyName.mlp     = 'Neural Net';
-
-figure;
-tiledlayout(2,2,'TileSpacing','compact','Padding','compact');
-
-for gi = 1:numel(groupOrderForPlots)
-    gname = groupOrderForPlots{gi};
-    if ~isfield(rocStruct, gname)
-        continue;
-    end
-    nexttile;
-    hold on;
-    for mi = 1:numel(modelOrder)
-        mname = modelOrder{mi};
-        if isfield(rocStruct.(gname), mname)
-            fpr = rocStruct.(gname).(mname).fpr;
-            tpr = rocStruct.(gname).(mname).tpr;
-            auc = rocStruct.(gname).(mname).testAUC;
-            plot(fpr, tpr, 'LineWidth', 1.5, ...
-                'DisplayName', sprintf('%s (AUC=%.2f)', prettyName.(mname), auc));
+    %% ====================== 7) ROC PLOTS (4 SUBPLOTS) =======================
+    modelOrder = {'logreg','svm_rbf','rf','knn','mlp'};
+    prettyName.logreg  = 'Logistic';
+    prettyName.svm_rbf = 'SVM RBF';
+    prettyName.rf      = 'Random Forest';
+    prettyName.knn     = 'k-NN';
+    prettyName.mlp     = 'Neural Net';
+    
+    f = figure;
+    tiledlayout(2,2,'TileSpacing','compact','Padding','compact');
+    
+    for gi = 1:numel(groupOrderForPlots)
+        gname = groupOrderForPlots{gi};
+        if ~isfield(rocStruct, gname)
+            continue;
         end
+        nexttile;
+        hold on;
+        for mi = 1:numel(modelOrder)
+            mname = modelOrder{mi};
+            if isfield(rocStruct.(gname), mname)
+                fpr = rocStruct.(gname).(mname).fpr;
+                tpr = rocStruct.(gname).(mname).tpr;
+                auc = rocStruct.(gname).(mname).testAUC;
+                plot(fpr, tpr, 'LineWidth', 1.5, ...
+                    'DisplayName', sprintf('%s (AUC=%.2f)', prettyName.(mname), auc));
+            end
+        end
+        plot([0 1],[0 1],'k--','LineWidth',1);
+        axis square;
+        xlim([0 1]); ylim([0 1]);
+        xlabel('False positive rate');
+        ylabel('True positive rate');
+        switch gname
+            case 'noise',        title('Noise features');
+            case 'perturbation', title('Perturbation features');
+            case 'tremor',       title('Tremor features');
+            case 'complexity',   title('Complexity features');
+            otherwise,           title(gname);
+        end
+        legend('Location','SouthEast','Box','off');
+        hold off;
     end
-    plot([0 1],[0 1],'k--','LineWidth',1);
-    axis square;
-    xlim([0 1]); ylim([0 1]);
-    xlabel('False positive rate');
-    ylabel('True positive rate');
-    switch gname
-        case 'noise',        title('Noise features');
-        case 'perturbation', title('Perturbation features');
-        case 'tremor',       title('Tremor features');
-        case 'complexity',   title('Complexity features');
-        otherwise,           title(gname);
+    
+    % ==== SAVE FIG ====
+    if contains(csvPath, '50kHz')
+        fs_suffix = '50kHz';
+    elseif contains(csvPath, '44_1kHz')
+        fs_suffix = '44_1kHz';
+    else
+        fs_suffix = 'unknownFS';
     end
-    legend('Location','SouthEast','Box','off');
-    hold off;
-end
+    
+    fig_dir = fullfile(currentPath, 'figures');
+    if ~exist(fig_dir, 'dir')
+        mkdir(fig_dir);
+    end
+    
+    tool_suffix = 'MATLAB';  
+    
+    file_base = sprintf('ROC_HUPA_%s_%s', fs_suffix, tool_suffix);
+    % Example:
+    %   ROC_HUPA_50kHz_MATLAB
+    %   ROC_HUPA_44_1kHz_MATLAB
+    
+    png_path = fullfile(fig_dir, [file_base '.png']);
+    pdf_path = fullfile(fig_dir, [file_base '.pdf']);
+    
+    saveas(f, png_path);
+    saveas(f, pdf_path);
+    
+    fprintf('\nROC figure saved to:\n  %s\n  %s\n', png_path, pdf_path);
 
-%% ===================== 6) MODEL SUBFUNCTIONS ============================
+end % end loop over datasets
+
+%% ===================== 8) MODEL SUBFUNCTIONS ============================
 
 function [cvAUC, testAUC, fprTest, tprTest] = model_logreg(Xtrain, ytrain, Xtest, ytest)
 % Grid Search for Logistic Regression using 'fitclinear'.
@@ -470,8 +539,6 @@ for ti = 1:numel(nTreeGrid)
             idxTr  = training(cvInner,k);
             idxVal = test(cvInner,k);
 
-            % Random Forest does not strictly require Z-score, but consistent data prep is good.
-            % Here we pass raw data as TreeBagger is scale-invariant.
             mdl = TreeBagger(nTrees, Xtrain(idxTr,:), categorical(ytrain(idxTr)), ...
                 'Method','classification', ...
                 'MinLeafSize', leaf, ...

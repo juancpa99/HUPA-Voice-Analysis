@@ -12,7 +12,9 @@
 % Additional feature:
 %   CPP (Cepstral Peak Prominence, mean over frames) from Covarep
 %
-% Output: "HUPA_voice_features_PRN_CPP.csv"
+% Output:
+%   - HUPA_voice_features_PRN_CPP_50kHz.csv
+%   - HUPA_voice_features_PRN_CPP_44_1kHz.csv
 
 clear; clc;
 
@@ -23,7 +25,8 @@ currentPath = fileparts(mfilename('fullpath'));
 % Define paths relative to this script
 % EXPECTED STRUCTURE:
 %   /toolboxes/  <- contains hurst, avca, covarep, etc.
-%   /data/       <- contains HUPA_db/Pathol and HUPA_db/Normal
+%   /data/       <- contains HUPA_db/healthy and HUPA_db/pathological
+%                    each with "50 kHz" and "44.1 kHz" subfolders
 toolboxes_dir = fullfile(currentPath, 'toolboxes');
 data_dir      = fullfile(currentPath, 'data');
 
@@ -36,12 +39,16 @@ covarep_root = fullfile(toolboxes_dir, 'covarep-master');
 fastdfa_root = fullfile(toolboxes_dir, 'fastdfa');
 hctsa_root   = fullfile(toolboxes_dir, 'hctsa-main');
 
-% Database paths
-path_pathol  = fullfile(data_dir, 'HUPA_db', 'Pathol');
-path_normal  = fullfile(data_dir, 'HUPA_db', 'Normal');
+% Database paths (per sampling rate)
+% 50 kHz
+path_healthy_50   = fullfile(data_dir, 'HUPA_db', 'healthy', '50 kHz');
+path_pathol_50    = fullfile(data_dir, 'HUPA_db', 'pathological', '50 kHz');
+out_csv_50        = fullfile(data_dir, 'HUPA_voice_features_PRN_CPP_50kHz.csv');
 
-% Output CSV
-out_csv      = fullfile(data_dir, 'HUPA_voice_features_PRN_CPP.csv');
+% 44.1 kHz
+path_healthy_44   = fullfile(data_dir, 'HUPA_db', 'healthy', '44.1 kHz');
+path_pathol_44    = fullfile(data_dir, 'HUPA_db', 'pathological', '44.1 kHz');
+out_csv_44        = fullfile(data_dir, 'HUPA_voice_features_PRN_CPP_44_1kHz.csv');
 
 %% ============= 2) TOOLBOX LOADING ======================================
 
@@ -76,117 +83,138 @@ end
 rehash;
 fprintf('Toolboxes loaded and path refreshed.\n');
 
-%% ============= 3) FILE LISTING =========================================
+%% ============= 3) RUN EXTRACTION FOR 50 kHz ============================
 
-filesPathol = dir(fullfile(path_pathol, '*.wav'));
-filesNormal = dir(fullfile(path_normal, '*.wav'));
+fprintf('\n==================== 50 kHz DATASET ====================\n');
+run_extraction_for_fs(path_healthy_50, path_pathol_50, out_csv_50);
 
-nPathol = numel(filesPathol);
-nNormal = numel(filesNormal);
-nTotal  = nPathol + nNormal;
+%% ============= 4) RUN EXTRACTION FOR 44.1 kHz ==========================
 
-if nTotal == 0
-    error('No .wav files found in the specified directories.');
-end
+fprintf('\n==================== 44.1 kHz DATASET ==================\n');
+run_extraction_for_fs(path_healthy_44, path_pathol_44, out_csv_44);
 
-fprintf('Found: %d Pathological + %d Normal = %d Total.\n', ...
-    nPathol, nNormal, nTotal);
+fprintf('\nALL DATASETS COMPLETED.\n');
 
-%% ============= 4) GET AVCA FEATURE NAMES (PRN) =========================
+%% ============= 5) LOCAL HELPER FUNCTIONS ===============================
 
-% Use one example file to get AVCA names (P+R+N)
-if nPathol > 0
-    exampleFile = fullfile(path_pathol, filesPathol(1).name);
-else
-    exampleFile = fullfile(path_normal, filesNormal(1).name);
-end
+function run_extraction_for_fs(path_healthy, path_pathol, out_csv)
+    % Runs the full PRN+CPP extraction pipeline for a given sampling-rate
+    % dataset (one healthy folder + one pathological folder) and saves
+    % results to the specified CSV.
 
-[vec_example, namesPRN] = AVCA_features_stat(exampleFile, 'PRN');
+    %% --- FILE LISTING ---
+    filesPathol = dir(fullfile(path_pathol, '*.wav'));
+    filesHealthy = dir(fullfile(path_healthy, '*.wav'));
 
-if isempty(vec_example) || isempty(namesPRN)
-    error('AVCA_features_stat(exampleFile, ''PRN'') returned empty results.');
-end
+    nPathol  = numel(filesPathol);
+    nHealthy = numel(filesHealthy);
+    nTotal   = nPathol + nHealthy;
 
-nFeatAVCA = numel(namesPRN);
-
-% Final feature names = all AVCA PRN names + CPP
-featureNamesOut = [namesPRN(:); {'CPP'}];
-nFeatOut = numel(featureNamesOut);
-
-fprintf('AVCA PRN features: %d (will add CPP -> total %d columns).\n', ...
-    nFeatAVCA, nFeatOut);
-
-%% ============= 5) OUTPUT PRE-ALLOCATION ================================
-
-features  = nan(nTotal, nFeatOut);
-fileNames = cell(nTotal, 1);
-labels    = nan(nTotal, 1);
-global_idx = 1;
-
-%% ============= 6) PROCESS PATHOLOGICAL FILES ===========================
-
-fprintf('\n--- Processing PATHOLOGICAL files ---\n');
-for k = 1:nPathol
-    sFile = fullfile(path_pathol, filesPathol(k).name);
-    fprintf('[%d/%d] %s ... ', k, nPathol, filesPathol(k).name);
-    try
-        f = extract_features_for_file_PRN_CPP(sFile);
-        features(global_idx, :) = f;
-        fileNames{global_idx}   = filesPathol(k).name;
-        labels(global_idx)      = 1; % Pathological
-        fprintf('OK\n');
-    catch ME
-        fprintf('CRITICAL ERROR: %s\n', ME.message);
-        fprintf('Stack trace:\n');
-        for kStack = 1:length(ME.stack)
-            fprintf('  > In %s (line %d)\n', ...
-                ME.stack(kStack).name, ME.stack(kStack).line);
-        end
-        % leave this row as NaN (label stays NaN)
+    if nTotal == 0
+        error('No .wav files found in:\n  %s\n  %s\n', path_pathol, path_healthy);
     end
-    global_idx = global_idx + 1;
-end
 
-%% ============= 7) PROCESS NORMAL FILES =================================
+    fprintf('Found: %d pathological + %d healthy = %d total.\n', ...
+        nPathol, nHealthy, nTotal);
 
-fprintf('\n--- Processing NORMAL files ---\n');
-for k = 1:nNormal
-    sFile = fullfile(path_normal, filesNormal(k).name);
-    fprintf('[%d/%d] %s ... ', k, nNormal, filesNormal(k).name);
-    try
-        f = extract_features_for_file_PRN_CPP(sFile);
-        features(global_idx, :) = f;
-        fileNames{global_idx}   = filesNormal(k).name;
-        labels(global_idx)      = 0; % Normal
-        fprintf('OK\n');
-    catch ME
-        fprintf('CRITICAL ERROR: %s\n', ME.message);
-        fprintf('Stack trace:\n');
-        for kStack = 1:length(ME.stack)
-            fprintf('  > In %s (line %d)\n', ...
-                ME.stack(kStack).name, ME.stack(kStack).line);
-        end
-        % leave this row as NaN (label stays NaN)
+    %% --- GET AVCA FEATURE NAMES (PRN) ---
+
+    % Use one example file (pathological preferred, otherwise healthy)
+    if nPathol > 0
+        exampleFile = fullfile(path_pathol, filesPathol(1).name);
+    else
+        exampleFile = fullfile(path_healthy, filesHealthy(1).name);
     end
-    global_idx = global_idx + 1;
+
+    [vec_example, namesPRN] = AVCA_features_stat(exampleFile, 'PRN');
+
+    if isempty(vec_example) || isempty(namesPRN)
+        error('AVCA_features_stat(exampleFile, ''PRN'') returned empty results.');
+    end
+
+    nFeatAVCA = numel(namesPRN);
+
+    % Final feature names = all AVCA PRN names + CPP
+    featureNamesOut = [namesPRN(:); {'CPP'}];
+    nFeatOut = numel(featureNamesOut);
+
+    fprintf('AVCA PRN features: %d (will add CPP -> total %d columns).\n', ...
+        nFeatAVCA, nFeatOut);
+
+    %% --- OUTPUT PRE-ALLOCATION ---
+
+    features   = nan(nTotal, nFeatOut);
+    fileNames  = cell(nTotal, 1);
+    labels     = nan(nTotal, 1);
+    global_idx = 1;
+
+    %% --- PROCESS PATHOLOGICAL FILES ---
+
+    fprintf('\n--- Processing PATHOLOGICAL files ---\n');
+    for k = 1:nPathol
+        sFile = fullfile(path_pathol, filesPathol(k).name);
+        fprintf('[%d/%d] %s ... ', k, nPathol, filesPathol(k).name);
+        try
+            f = extract_features_for_file_PRN_CPP(sFile);
+            features(global_idx, :) = f;
+            fileNames{global_idx}   = filesPathol(k).name;
+            labels(global_idx)      = 1; % Pathological
+            fprintf('OK\n');
+        catch ME
+            fprintf('CRITICAL ERROR: %s\n', ME.message);
+            fprintf('Stack trace:\n');
+            for kStack = 1:length(ME.stack)
+                fprintf('  > In %s (line %d)\n', ...
+                    ME.stack(kStack).name, ME.stack(kStack).line);
+            end
+            % leave this row as NaN (label stays NaN)
+        end
+        global_idx = global_idx + 1;
+    end
+
+    %% --- PROCESS HEALTHY FILES ---
+
+    fprintf('\n--- Processing HEALTHY files ---\n');
+    for k = 1:nHealthy
+        sFile = fullfile(path_healthy, filesHealthy(k).name);
+        fprintf('[%d/%d] %s ... ', k, nHealthy, filesHealthy(k).name);
+        try
+            f = extract_features_for_file_PRN_CPP(sFile);
+            features(global_idx, :) = f;
+            fileNames{global_idx}   = filesHealthy(k).name;
+            labels(global_idx)      = 0; % Healthy
+            fprintf('OK\n');
+        catch ME
+            fprintf('CRITICAL ERROR: %s\n', ME.message);
+            fprintf('Stack trace:\n');
+            for kStack = 1:length(ME.stack)
+                fprintf('  > In %s (line %d)\n', ...
+                    ME.stack(kStack).name, ME.stack(kStack).line);
+            end
+            % leave this row as NaN (label stays NaN)
+        end
+        global_idx = global_idx + 1;
+    end
+
+    %% --- SAVE TO CSV ---
+
+    % Filter out rows with failed labels
+    validRows = ~isnan(labels);
+    features  = features(validRows, :);
+    fileNames = fileNames(validRows);
+    labels    = labels(validRows);
+
+    T = array2table(features, 'VariableNames', featureNamesOut(:)');
+    T.FileName = fileNames(:);
+    T.Label    = labels(:);
+
+    writetable(T, out_csv);
+    fprintf('\nPROCESS COMPLETE. Data saved to: %s\n', out_csv);
 end
 
-%% ============= 8) SAVE TO CSV ==========================================
-
-% Filter out rows with failed labels
-validRows = ~isnan(labels);
-features  = features(validRows, :);
-fileNames = fileNames(validRows);
-labels    = labels(validRows);
-
-T = array2table(features, 'VariableNames', featureNamesOut(:)');
-T.FileName = fileNames(:);
-T.Label    = labels(:);
-
-writetable(T, out_csv);
-fprintf('\nPROCESS COMPLETE. Data saved to: %s\n', out_csv);
-
-%% ============= 9) LOCAL HELPER FUNCTIONS ===============================
+% ========================================================================
+% LOCAL FEATURE-EXTRACTION UTILITIES
+% ========================================================================
 
 function f = extract_features_for_file_PRN_CPP(sFile)
     % Extracts all AVCA PRN features (as returned by AVCA_features_stat)
@@ -214,14 +242,14 @@ function cpp_mean = compute_cpp_covarep(sFile)
     end
     x = x(:);
 
-    % Remove DC and normalize
+    % Remove DC and normalise
     x = x - mean(x);
     maxAbs = max(abs(x));
     if maxAbs > 0
         x = x / maxAbs;
     end
 
-    % CPP parameters: smoothing=1, normalization='line', dB scale=1
+    % CPP parameters: smoothing=1, normalisation='line', dB scale=1
     CPP = cpp(x, fs, 1, 'line', 1);  % [N x 2], col 1 = CPP, col 2 = time
 
     vals = CPP(:,1);

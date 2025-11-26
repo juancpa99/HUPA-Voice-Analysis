@@ -1,49 +1,215 @@
 # HUPA Voice Analysis Project
 
-This repository contains MATLAB scripts for feature extraction and classification of voice signals (Pathological vs. Normal) using the HUPA dataset structure. It focuses on Perturbation, Regularity, Noise (PRN), and Complexity features.
+This repository contains MATLAB and Python scripts for feature extraction and classification of sustained vowel voice signals (pathological vs. healthy) using the HUPA database. The focus is on Perturbation, Regularity, Noise (PRN), and Complexity features.
 
-## 📂 Database Download
+---
 
-To run these scripts, you need the **HUPA Database**.
+## HUPA Database
 
-> **[🔗 INSERT DATASET DOWNLOAD LINK HERE]**
+To run the scripts, you need the **HUPA database**.
 
-**Setup Instructions:**
-1. Download the dataset.
-2. Extract the files into the `data/` folder of this repository.
-3. Ensure the directory structure matches exactly:
+> [INSERT DATASET DOWNLOAD LINK HERE]
+
+After downloading and organising the data, the expected structure inside this repository is:
 
 ```text
 HUPA-Voice-Analysis/
+├── toolboxes/
+│   ├── AVCA-ByO-master/
+│   ├── covarep-master/
+│   ├── hurst estimators/
+│   ├── ME-master/
+│   ├── rpde/
+│   ├── fastdfa/
+│   └── hctsa-main/
 ├── data/
-│   └── HUPA_db/
-│       ├── Normal/   <-- Contains normal .wav files
-│       └── Pathol/   <-- Contains pathological .wav files
+│   ├── HUPA_db/
+│   │   ├── HUPA_db.xlsx
+│   │   ├── README.md
+│   │   ├── healthy/
+│   │   │   ├── 50 kHz/      ← mono .wav files at / resampled to 50 kHz
+│   │   │   └── 44.1 kHz/    ← mono .wav files resampled to 44.1 kHz
+│   │   └── pathological/
+│   │       ├── 50 kHz/      ← mono .wav files at / resampled to 50 kHz
+│   │       └── 44.1 kHz/    ← mono .wav files resampled to 44.1 kHz
+│   ├── HUPA_voice_features_PRN_CPP_50kHz.csv
+│   ├── HUPA_voice_features_PRN_CPP_44_1kHz.csv
+│   ├── HUPA_Python_Results_Summary_50kHz.csv
+│   ├── HUPA_Python_Results_Summary_44_1kHz.csv
+│   └── figures/
+│       ├── ROC_HUPA_50kHz_MATLAB.png
+│       ├── ROC_HUPA_50kHz_MATLAB.pdf
+│       ├── ROC_HUPA_44_1kHz_MATLAB.png
+│       ├── ROC_HUPA_44_1kHz_MATLAB.pdf
+│       ├── ROC_HUPA_50kHz_Python.png
+│       ├── ROC_HUPA_50kHz_Python.pdf
+│       ├── ROC_HUPA_44_1kHz_Python.png
+│       └── ROC_HUPA_44_1kHz_Python.pdf
+└── README.md
 ```
 
-## Workflow
+* The **healthy/** folder contains recordings from healthy speakers.
+* The **pathological/** folder contains recordings from patients with different laryngeal pathologies.
+* Each condition is available at **50 kHz** and **44.1 kHz** (all files are mono).
+* Inside `data/HUPA_db/` there is a spreadsheet `HUPA_db.xlsx` describing all speakers and recordings (age, sex, GRBAS scores, pathology codes, etc.), together with a local `README.md` in the same folder that documents the database structure and metadata fields in the Excel file.
 
-1.  **Feature Extraction (`HUPA_Features_Extraction.m`)**:
-    * Loads `.wav` files from `data/`.
-    * Extracts AVCA (PRN) features and CPP (Covarep).
-    * Saves the result to a CSV file.
-2.  **Analysis & Classification (`HUPA_PRN_GridSearch_ROC.m`)**:
-    * Loads the generated CSV.
-    * Performs Grid Search with Cross-Validation.
-    * Evaluates models (Logistic Regression, SVM, Random Forest, k-NN, MLP).
-    * Generates ROC curves and AUC statistics.
+---
+
+## MATLAB Workflow
+
+### 1. Feature Extraction (`HUPA_Features_Extraction.m`)
+
+This script:
+
+1. Loads `.wav` files from:
+
+   * `data/HUPA_db/healthy/50 kHz/`
+   * `data/HUPA_db/pathological/50 kHz/`
+   * `data/HUPA_db/healthy/44.1 kHz/`
+   * `data/HUPA_db/pathological/44.1 kHz/`
+
+2. Extracts:
+
+   * AVCA PRN features (Perturbation, Regularity, Noise)
+   * Nonlinear/complexity features (depending on AVCA configuration)
+   * CPP (Cepstral Peak Prominence) using Covarep
+
+3. Saves **two CSV files**, one per sampling frequency, in the `data/` folder:
+
+   * `HUPA_voice_features_PRN_CPP_50kHz.csv`
+   * `HUPA_voice_features_PRN_CPP_44_1kHz.csv`
+
+Each CSV includes:
+
+* One row per audio file
+* Columns:
+
+  * All AVCA PRN (and complexity) features
+  * `CPP`
+  * `FileName`
+  * `Label` (0 = healthy, 1 = pathological)
+
+### 2. Classification & ROC Analysis (`HUPA_PRN_GridSearch_ROC.m`)
+
+For each CSV:
+
+1. Loads `HUPA_voice_features_PRN_CPP_50kHz.csv` or `HUPA_voice_features_PRN_CPP_44_1kHz.csv`.
+2. Defines feature groups:
+
+   * Noise
+   * Perturbation (including CPP and jitter/shimmer)
+   * Tremor
+   * Complexity / nonlinear measures
+3. Cleans the data:
+
+   * Removes all-NaN / constant columns
+   * Imputes remaining NaNs (median)
+4. Splits the data:
+
+   * 80% Train (for hyperparameter optimisation via 5-fold CV)
+   * 20% independent Test set
+5. Trains and tunes:
+
+   * Logistic Regression (`fitclinear`)
+   * SVM (RBF) (`fitcsvm` + `fitPosterior`)
+   * Random Forest (`TreeBagger`)
+   * k-NN (`fitcknn`)
+   * MLP (`fitcnet`, if available)
+6. Evaluates models on the Test set and computes AUC.
+7. Plots ROC curves for the four feature groups (Noise, Perturbation, Tremor, Complexity).
+
+The script saves **one figure per sampling rate** in `data/figures/`, using the convention:
+
+* For 50 kHz:
+
+  * `ROC_HUPA_50kHz_MATLAB.png`
+  * `ROC_HUPA_50kHz_MATLAB.pdf`
+* For 44.1 kHz:
+
+  * `ROC_HUPA_44_1kHz_MATLAB.png`
+  * `ROC_HUPA_44_1kHz_MATLAB.pdf`
+
+---
+
+## Python Workflow (`HUPA_Python_GridSearch.py`)
+
+A Python implementation using `scikit-learn` reproduces the MATLAB analysis for both sampling frequencies.
+
+### Inputs
+
+The script expects the two CSVs generated by MATLAB:
+
+* `data/HUPA_voice_features_PRN_CPP_50kHz.csv`
+* `data/HUPA_voice_features_PRN_CPP_44_1kHz.csv`
+
+For each CSV, it runs the full pipeline independently.
+
+### Steps
+
+For each sampling frequency (50 kHz, 44.1 kHz):
+
+1. Loads the corresponding CSV.
+
+2. Defines the same feature groups:
+
+   * Noise, Perturbation, Tremor, Complexity.
+
+3. Uses a common train–test split:
+
+   * 80% Train, 20% Test, stratified by label.
+
+4. For each group, runs a `GridSearchCV` with 5-fold CV and AUC as the scoring metric, over:
+
+   * Logistic Regression
+   * SVM (RBF)
+   * Random Forest
+   * k-NN
+   * MLP
+
+   Each model is wrapped in a `Pipeline` with:
+
+   * `SimpleImputer(strategy="median")`
+   * `StandardScaler` (except Random Forest, which only uses imputation)
+
+5. Evaluates the best model (per algorithm) on the hold-out Test set.
+
+6. Plots ROC curves (2×2 subplots for Noise/Perturbation/Tremor/Complexity) and saves them to `data/figures/`:
+
+   * 50 kHz:
+
+     * `ROC_HUPA_50kHz_Python.png`
+     * `ROC_HUPA_50kHz_Python.pdf`
+   * 44.1 kHz:
+
+     * `ROC_HUPA_44_1kHz_Python.png`
+     * `ROC_HUPA_44_1kHz_Python.pdf`
+
+7. Saves a summary CSV with all models and groups:
+
+   * `data/HUPA_Python_Results_Summary_50kHz.csv`
+   * `data/HUPA_Python_Results_Summary_44_1kHz.csv`
+
+Each summary file contains, for every combination of feature group and model:
+
+* `Group`
+* `Model`
+* `Test_AUC`
+* `CV_AUC_Mean`
+* `Best_Params`
+
+---
 
 ## Requirements
 
-* MATLAB (R2020b or newer recommended).
-* Statistics and Machine Learning Toolbox.
-* Deep Learning Toolbox (optional, for `fitcnet` / MLP).
+### MATLAB
+
+* MATLAB (R2020b or newer recommended)
+* Statistics and Machine Learning Toolbox
+* Deep Learning Toolbox (optional, for `fitcnet`)
 
 ### External Toolboxes
 
-To run the feature extraction, you must download the following third-party toolboxes and place them inside the `toolboxes/` folder.
-
-**Required Libraries:**
+Place these libraries inside `toolboxes/`:
 
 * **[AVCA-ByO](https://github.com/BYO-UPM/AVCA-ByO)**: Essential for P, R, N features.
 * **[Covarep](https://github.com/covarep/covarep)**: Used for CPP feature extraction.
@@ -53,57 +219,23 @@ To run the feature extraction, you must download the following third-party toolb
 * **[HCTSA](https://github.com/benfulcher/hctsa)**: Highly Comparative Time-Series Analysis (used for D2 and LLE).
 * **[ME (Markovian Entropies)](https://github.com/jdariasl/ME)**: Functions for the computation of entropies from Markov Models.
 
-> **⚠️ Compatibility Note for Newer MATLAB Versions**
+> **Compatibility Note for Newer MATLAB Versions**
 >
 > Many of these toolboxes were developed years ago. If you are using a recent version of MATLAB (e.g., R2020b+), please be aware of the following:
 > * **Legacy Code:** You may need to manually update small parts of the external toolboxes to fix deprecated functions.
 > * **Path Conflicts:** The script `HUPA_Features_Extraction.m` already handles a known conflict with Covarep (it removes `backcompatibility_2015` to avoid breaking the built-in `audioread`).
 > * **Debugging:** If you encounter "function not found" or "input argument" errors inside these toolboxes, check that their internal paths are correctly added and that they support your MATLAB version.
 
-## Setup & Usage
+### Python
 
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/juancpa99/HUPA-Voice-Analysis.git](https://github.com/juancpa99/HUPA-Voice-Analysis.git)
-    cd HUPA-Voice-Analysis
-    ```
+Install dependencies via:
 
-2.  **Prepare Directory Structure:**
-    Create a `toolboxes` folder and place the external libraries inside.
-    Create a `data` folder structured as follows:
-    ```
-    data/
-    ├── HUPA_db/
-    │   ├── Normal/   (place .wav files here)
-    │   └── Pathol/   (place .wav files here)
-    ```
+```bash
+pip install -r requirements.txt
+```
 
-3.  **Run Extraction:**
-    Open `HUPA_Features_Extraction.m` in MATLAB and run it. This generates `data/HUPA_voice_features_PRN_CPP.csv`.
-
-4.  **Run Analysis:**
-    Open `HUPA_PRN_GridSearch_ROC.m` and run it to see the classification results.
-
-## 🐍 Python Implementation
-
-An equivalent analysis pipeline is provided in Python for users who prefer `scikit-learn`. This script replicates the MATLAB workflow, performing identical data splitting, feature standardisation, and hyperparameter optimisation to ensure comparable results.
-
-### Features
-* **Automated Grid Search:** Optimises hyperparameters for Logistic Regression, SVM, Random Forest, k-NN, and MLP.
-* **Robust Preprocessing:** Handles missing values and standardises features automatically.
-* **Visualisation:** Generates ROC curves and AUC comparison plots.
-
-### Usage
-1.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-2.  **Run the analysis:**
-    Ensure the file `HUPA_voice_features_PRN_CPP.csv` is located in the `data/` directory (generated by the MATLAB extraction script).
-    ```bash
-    python HUPA_Python_GridSearch.py
-    ```
+---
 
 ## Citation
-(This is for the paper).
+
+[Add here the reference to the HUPA database and the related publication, once finalised.]
